@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mdify"
+version = "0.1.0"
+description = "Convert documents (HTML, DOCX, CSV, XLSX) to Markdown for LLMs"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "mdify" }
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Text Processing :: Markup :: Markdown",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[project.scripts]
+mdify = "mdify.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mdify*"]
+exclude = ["sample_data*", "tests*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

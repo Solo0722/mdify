@@ -1,0 +1,5 @@
+ID,Product Name,Category,Price,In Stock
+101,Markdown Converter,Software,49.99,Yes
+102,LLM Context Optimizer,Software,89.00,Yes
+103,Prompt Engineering Handbook,Book,24.50,No
+104,Document Parser Toolkit,Software,129.95,Yes
