@@ -32,3 +32,9 @@
    mdify convert sample_data/sample.docx --stats
    pytest
 ```
+
+## Supported formats and options
+1. html
+2. docx
+3. csv
+4. xlsx
