@@ -237,6 +237,12 @@ def _render_node_to_markdown(node: Union[HtmlNode, str], list_depth: int = 0) ->
         inner = render_children(node)
         return _wrap_inline_formatting(inner, "`")
 
+    # Image <img>
+    if tag == "img":
+        src = node.attrs.get("src", "") or ""
+        alt = node.attrs.get("alt", "") or ""
+        return f"![{alt}]({src})"
+
     # Link <a>
     if tag == "a":
         href = node.attrs.get("href", "") or ""
@@ -366,6 +372,8 @@ def _extract_raw_text(node: Union[HtmlNode, str]) -> str:
         return node
     if node.tag in IGNORED_TAGS:
         return ""
+    if node.tag == "img":
+        return node.attrs.get("alt", "") or ""
 
     parts = []
     for child in node.children:

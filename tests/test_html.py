@@ -70,6 +70,20 @@ def test_links():
     assert "[GitHub](https://github.com)" in md
 
 
+def test_image_with_alt():
+    html = '<p><img src="https://example.com/photo.jpg" alt="A beautiful sunset"></p>'
+    md, raw = convert_html(html)
+    assert "![A beautiful sunset](https://example.com/photo.jpg)" in md
+    assert "A beautiful sunset" in raw
+
+
+def test_image_without_alt():
+    html = '<p><img src="https://example.com/banner.png"></p>'
+    md, _ = convert_html(html)
+    assert "![](https://example.com/banner.png)" in md
+
+
+
 def test_unordered_lists():
     html = """
     <ul>
