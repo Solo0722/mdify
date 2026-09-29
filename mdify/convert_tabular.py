@@ -76,10 +76,18 @@ def convert_csv(csv_content: str) -> Tuple[str, str]:
 
     # Try sniffing dialect, fallback to standard comma delimiter
     sample = csv_content[:4096]
+    dialect = csv.excel  # default standard comma
     try:
-        dialect = csv.Sniffer().sniff(sample)
+        sniffed = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+        if sniffed.delimiter and sniffed.delimiter not in ("\r", "\n"):
+            dialect = sniffed
     except Exception:
-        dialect = csv.excel  # default standard comma
+        try:
+            sniffed = csv.Sniffer().sniff(sample)
+            if sniffed.delimiter and sniffed.delimiter not in ("\r", "\n"):
+                dialect = sniffed
+        except Exception:
+            dialect = csv.excel
 
     reader = csv.reader(io.StringIO(csv_content), dialect=dialect)
     rows: List[List[str]] = [row for row in reader if any(cell.strip() for cell in row)]
