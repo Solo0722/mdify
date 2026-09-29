@@ -7,9 +7,14 @@ import sys
 from pathlib import Path
 from typing import Optional, Sequence
 
-from mdify.convert_docx import convert_docx_file
-from mdify.convert_html import convert_html_file
-from mdify.convert_tabular import convert_csv_file, convert_xlsx_file
+from mdify.convert_docx import convert_docx, convert_docx_file
+from mdify.convert_html import convert_html, convert_html_file
+from mdify.convert_tabular import (
+    convert_csv,
+    convert_csv_file,
+    convert_xlsx,
+    convert_xlsx_file,
+)
 from mdify.stats import calculate_stats, format_stats
 
 SUPPORTED_EXTENSIONS = {
@@ -32,7 +37,14 @@ def build_parser() -> argparse.ArgumentParser:
     convert_parser = subparsers.add_parser("convert", help="Convert a document file to Markdown")
     convert_parser.add_argument(
         "file",
-        help="Path to the input document (.html, .htm, .docx, .csv, .xlsx)",
+        help="Path to the input document (.html, .htm, .docx, .csv, .xlsx) or '-' for stdin",
+    )
+    convert_parser.add_argument(
+        "-t",
+        "--type",
+        dest="type",
+        metavar="FORMAT",
+        help="Input document format (e.g. html, docx, csv, xlsx). Required when reading from stdin ('-').",
     )
     convert_parser.add_argument(
         "-o",
@@ -53,6 +65,8 @@ def run_convert(
     file_path_str: str,
     output_path_str: Optional[str] = None,
     show_stats: bool = False,
+    file_type: Optional[str] = None,
+    stdin_stream=None,
     stdout_stream=None,
     stderr_stream=None,
 ) -> int:
@@ -63,29 +77,93 @@ def run_convert(
     stdout = stdout_stream if stdout_stream is not None else sys.stdout
     stderr = stderr_stream if stderr_stream is not None else sys.stderr
 
-    input_path = Path(file_path_str)
-    if not input_path.exists():
-        stderr.write(f"Error: File not found: '{file_path_str}'\n")
-        return 1
+    if file_path_str == "-":
+        if not file_type:
+            supported_list = ", ".join(sorted(SUPPORTED_EXTENSIONS.keys()))
+            stderr.write(
+                "Error: --type FORMAT is required when reading from stdin ('-'). "
+                f"Supported formats: {supported_list}\n"
+            )
+            return 1
 
-    if not input_path.is_file():
-        stderr.write(f"Error: Path is not a file: '{file_path_str}'\n")
-        return 1
+        fmt = file_type.lower()
+        ext = fmt if fmt.startswith(".") else f".{fmt}"
+        if ext not in SUPPORTED_EXTENSIONS:
+            supported_list = ", ".join(sorted(SUPPORTED_EXTENSIONS.keys()))
+            stderr.write(
+                f"Error: Unsupported format '{file_type}'. Supported formats: {supported_list}\n"
+            )
+            return 1
 
-    ext = input_path.suffix.lower()
-    converter = SUPPORTED_EXTENSIONS.get(ext)
-    if converter is None:
-        supported_list = ", ".join(sorted(SUPPORTED_EXTENSIONS.keys()))
-        stderr.write(
-            f"Error: Unsupported file extension '{ext}'. Supported formats: {supported_list}\n"
-        )
-        return 1
+        stream = stdin_stream if stdin_stream is not None else getattr(sys.stdin, "buffer", sys.stdin)
+        try:
+            raw_input = stream.read()
+        except Exception as exc:
+            stderr.write(f"Error reading from stdin: {exc}\n")
+            return 1
 
-    try:
-        markdown, raw_text = converter(input_path)
-    except Exception as exc:
-        stderr.write(f"Error converting '{file_path_str}': {exc}\n")
-        return 1
+        try:
+            if ext in (".html", ".htm"):
+                text_input = (
+                    raw_input.decode("utf-8", errors="replace")
+                    if isinstance(raw_input, bytes)
+                    else raw_input
+                )
+                markdown, raw_text = convert_html(text_input)
+            elif ext == ".csv":
+                text_input = (
+                    raw_input.decode("utf-8", errors="replace")
+                    if isinstance(raw_input, bytes)
+                    else raw_input
+                )
+                markdown, raw_text = convert_csv(text_input)
+            elif ext == ".docx":
+                bytes_input = (
+                    raw_input
+                    if isinstance(raw_input, bytes)
+                    else raw_input.encode("latin-1")
+                )
+                markdown, raw_text = convert_docx(bytes_input)
+            elif ext == ".xlsx":
+                bytes_input = (
+                    raw_input
+                    if isinstance(raw_input, bytes)
+                    else raw_input.encode("latin-1")
+                )
+                markdown, raw_text = convert_xlsx(bytes_input)
+        except Exception as exc:
+            stderr.write(f"Error converting stdin: {exc}\n")
+            return 1
+
+    else:
+        input_path = Path(file_path_str)
+        if not input_path.exists():
+            stderr.write(f"Error: File not found: '{file_path_str}'\n")
+            return 1
+
+        if not input_path.is_file():
+            stderr.write(f"Error: Path is not a file: '{file_path_str}'\n")
+            return 1
+
+        if file_type:
+            fmt = file_type.lower()
+            ext = fmt if fmt.startswith(".") else f".{fmt}"
+        else:
+            ext = input_path.suffix.lower()
+
+        converter = SUPPORTED_EXTENSIONS.get(ext)
+        if converter is None:
+            supported_list = ", ".join(sorted(SUPPORTED_EXTENSIONS.keys()))
+            stderr.write(
+                f"Error: Unsupported file extension '{ext}'. Supported formats: {supported_list}\n"
+            )
+            return 1
+
+        try:
+            markdown, raw_text = converter(input_path)
+        except Exception as exc:
+            stderr.write(f"Error converting '{file_path_str}': {exc}\n")
+            return 1
 
     stats = calculate_stats(raw_text, markdown)
     stats_formatted = format_stats(stats)
@@ -119,6 +197,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             file_path_str=args.file,
             output_path_str=args.output,
             show_stats=args.stats,
+            file_type=args.type,
         )
 
     return 0
