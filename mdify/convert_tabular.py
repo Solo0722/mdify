@@ -10,7 +10,8 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from mdify._markdown import MAX_TABLE_CELLS, escape_text, pipe_table
-from mdify._ooxml import R, main_part, open_package, read_xml, related_part, relationships
+from mdify._ooxml import (R, main_part, open_package, read_xml, related_part,
+                          relationships)
 from mdify._text import decode_text
 
 SS_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
@@ -46,7 +47,7 @@ def convert_csv(csv_content: str, *, delimiter: str | None = None) -> tuple[str,
         except csv.Error:
             pass  # Never guess an arbitrary letter as a delimiter.
     reader = csv.reader(io.StringIO(csv_content, newline=''), dialect=dialect, **options)
-    rows = [row for row in reader if any(cell.strip() for cell in row)]
+    rows = [row for row in reader if all(cell.strip() for cell in row)]
     return _format_pipe_table(rows), '\n'.join(' '.join(cell.strip() for cell in row) for row in rows)
 
 
