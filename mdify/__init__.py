@@ -1,9 +1,10 @@
-"""mdify: Convert documents (HTML, DOCX, CSV, XLSX) to Markdown for LLMs."""
+"""mdify: Convert HTML, DOCX, CSV, XLSX, and PPTX to Markdown for LLMs."""
 
 __version__ = "0.1.0"
 
 from mdify.convert_html import convert_html, convert_html_file
 from mdify.convert_docx import convert_docx, convert_docx_file
+from mdify.convert_pptx import convert_pptx, convert_pptx_file
 from mdify.convert_tabular import (
     convert_csv,
     convert_csv_file,
@@ -17,6 +18,8 @@ __all__ = [
     "convert_html_file",
     "convert_docx",
     "convert_docx_file",
+    "convert_pptx",
+    "convert_pptx_file",
     "convert_csv",
     "convert_csv_file",
     "convert_xlsx",

@@ -1,326 +1,223 @@
-"""CSV and XLSX to Markdown table converters."""
-
+"""CSV and XLSX to Markdown tables, preserving values and package relationships."""
 from __future__ import annotations
 
 import csv
 import io
+import posixpath
 import re
-import xml.etree.ElementTree as ET
-import zipfile
+from datetime import datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
 
-SS_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
-R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+from mdify._markdown import MAX_TABLE_CELLS, escape_text, pipe_table
+from mdify._ooxml import R, main_part, open_package, read_xml, related_part, relationships
+from mdify._text import decode_text
 
-
-def _qn(tag: str) -> str:
-    """Helper for SpreadsheetML qualified names."""
-    return f"{{{SS_NS}}}{tag}"
+SS_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+R_NS = R
 
 
-def _col_letters_to_index(col_letters: str) -> int:
-    """Convert column letters (e.g. 'A', 'Z', 'AA') to 0-based index."""
-    idx = 0
-    for char in col_letters.upper():
-        if "A" <= char <= "Z":
-            idx = idx * 26 + (ord(char) - ord("A") + 1)
-    return max(0, idx - 1)
+def _qn(tag):
+    return f'{{{SS_NS}}}{tag}'
 
 
-def _format_pipe_table(rows: List[List[str]]) -> str:
-    """Format a 2D list of strings into a Markdown pipe table."""
-    if not rows:
-        return ""
-
-    num_cols = max(len(r) for r in rows)
-    if num_cols == 0:
-        return ""
-
-    # Pad any jagged rows
-    padded = [r + [""] * (num_cols - len(r)) for r in rows]
-
-    # Clean up cells
-    cleaned_rows = []
-    for r in padded:
-        cleaned_cells = []
-        for cell in r:
-            c_text = str(cell).replace("\n", " ").replace("|", "\\|")
-            c_text = re.sub(r"\s+", " ", c_text).strip()
-            cleaned_cells.append(c_text)
-        cleaned_rows.append(cleaned_cells)
-
-    header = cleaned_rows[0]
-    separator = ["---"] * num_cols
-    lines = [
-        "| " + " | ".join(header) + " |",
-        "| " + " | ".join(separator) + " |",
-    ]
-
-    for row in cleaned_rows[1:]:
-        lines.append("| " + " | ".join(row) + " |")
-
-    return "\n".join(lines)
+def _col_letters_to_index(letters):
+    value = 0
+    for letter in letters.upper():
+        value = value * 26 + ord(letter) - ord('A') + 1
+    return value - 1
 
 
-# ==========================================
-# CSV Converter
-# ==========================================
+def _format_pipe_table(rows):
+    return pipe_table([[escape_text(str(cell)) for cell in row] for row in rows])
 
 
-def convert_csv(csv_content: str) -> Tuple[str, str]:
-    """Convert CSV string to Markdown table and raw text."""
-    csv_content = csv_content.lstrip("\ufeff")
+def convert_csv(csv_content: str, *, delimiter: str | None = None) -> tuple[str, str]:
+    csv_content = csv_content.lstrip('\ufeff')
+    if delimiter is not None and (len(delimiter) != 1 or delimiter in '\r\n\x00"'):
+        raise ValueError('CSV delimiter must be one non-newline character other than a quote')
     if not csv_content.strip():
-        return "", ""
+        return '', ''
+    options = {'delimiter': delimiter} if delimiter else {}
+    dialect = csv.excel
+    if delimiter is None:
+        try:
+            dialect = csv.Sniffer().sniff(csv_content[:4096], delimiters=',;\t|')
+        except csv.Error:
+            pass  # Never guess an arbitrary letter as a delimiter.
+    reader = csv.reader(io.StringIO(csv_content, newline=''), dialect=dialect, **options)
+    rows = [row for row in reader if any(cell.strip() for cell in row)]
+    return _format_pipe_table(rows), '\n'.join(' '.join(cell.strip() for cell in row) for row in rows)
 
-    # Try sniffing dialect, fallback to standard comma delimiter
-    sample = csv_content[:4096]
-    dialect = csv.excel  # default standard comma
+
+def convert_csv_file(file_path: str | Path, *, delimiter=None, encoding=None) -> tuple[str, str]:
+    return convert_csv(decode_text(Path(file_path).read_bytes(), encoding), delimiter=delimiter)
+
+
+_BUILTIN_FORMATS = {
+    14: 'mm-dd-yy', 15: 'd-mmm-yy', 16: 'd-mmm', 17: 'mmm-yy',
+    18: 'h:mm AM/PM', 19: 'h:mm:ss AM/PM', 20: 'h:mm', 21: 'h:mm:ss',
+    22: 'm/d/yy h:mm', 45: 'mm:ss', 46: '[h]:mm:ss', 47: 'mmss.0',
+}
+
+
+def _date_kind(format_code):
+    code = format_code.split(';')[0].lower()
+    code = re.sub(r'"[^\"]*"|\\.|_.|\*.', '', code)
+    elapsed = bool(re.search(r'\[[hms]+\]', code))
+    code = re.sub(r'\[[^]]*\]', '', code)
+    date = bool(re.search('[yd]', code))
+    time = elapsed or bool(re.search('[hs]', code))
+    date = date or ('m' in code and not time)
+    return date, time, elapsed
+
+
+def _format_date(value, code, date1904):
+    date, time, elapsed = _date_kind(code)
+    if not (date or time):
+        return value
     try:
-        sniffed = csv.Sniffer().sniff(sample, delimiters=",;\t|")
-        if sniffed.delimiter and sniffed.delimiter not in ("\r", "\n"):
-            dialect = sniffed
-    except Exception:
-        try:
-            sniffed = csv.Sniffer().sniff(sample)
-            if sniffed.delimiter and sniffed.delimiter not in ("\r", "\n"):
-                dialect = sniffed
-        except Exception:
-            dialect = csv.excel
-
-    reader = csv.reader(io.StringIO(csv_content), dialect=dialect)
-    rows: List[List[str]] = [row for row in reader if any(cell.strip() for cell in row)]
-
-    if not rows:
-        return "", ""
-
-    markdown = _format_pipe_table(rows)
-    raw_text = "\n".join(" ".join(cell.strip() for cell in row) for row in rows)
-
-    return markdown, raw_text
-
-
-def convert_csv_file(file_path: Union[str, Path]) -> Tuple[str, str]:
-    """Convert CSV file to Markdown table and raw text."""
-    path = Path(file_path)
-    for encoding in ("utf-8-sig", "utf-8", "latin-1"):
-        try:
-            content = path.read_text(encoding=encoding)
-            return convert_csv(content)
-        except UnicodeDecodeError:
-            continue
-    raise UnicodeDecodeError("csv", b"", 0, 0, f"Failed to decode {file_path} with supported encodings.")
-
-
-# ==========================================
-# XLSX Converter
-# ==========================================
+        serial = Decimal(value)
+        if not serial.is_finite():
+            return value
+        seconds = int((serial * 86400).to_integral_value())
+        if elapsed:
+            sign = '-' if seconds < 0 else ''
+            hours, rest = divmod(abs(seconds), 3600)
+            minutes, seconds = divmod(rest, 60)
+            return f'{sign}{hours}:{minutes:02}:{seconds:02}'
+        # Excel retains the fictional 1900-02-29 for serial 60.
+        fictional = not date1904 and 60 <= serial < 61
+        base = datetime(1904, 1, 1) if date1904 else datetime(1899, 12, 31)
+        if not date1904 and serial >= 60:
+            seconds -= 86400
+        result = base + timedelta(seconds=seconds)
+        date_text = '1900-02-29' if fictional else result.strftime('%Y-%m-%d')
+        time_text = result.strftime('%H:%M:%S')
+        return date_text + ' ' + time_text if date and time else date_text if date else time_text
+    except (InvalidOperation, ValueError, OverflowError):
+        return value
 
 
 class XlsxParser:
-    """Parses an OpenXML spreadsheet (.xlsx) into Markdown."""
+    def __init__(self, archive):
+        self.zip = archive
+        self.part, self.root = main_part(archive, _qn('workbook'))
+        self.relationships = relationships(archive, self.part)
+        base = posixpath.dirname(self.part)
+        strings = related_part(archive, self.relationships, 'sharedStrings', base + '/sharedStrings.xml')
+        self.shared_strings = []
+        if strings:
+            for item in read_xml(archive, strings).findall(_qn('si')):
+                self.shared_strings.append(self._string(item))
+        self.formats = []
+        styles = related_part(archive, self.relationships, 'styles', base + '/styles.xml')
+        if styles:
+            style_root = read_xml(archive, styles)
+            formats = dict(_BUILTIN_FORMATS)
+            for num_format in style_root.findall(f'{_qn("numFmts")}/{_qn("numFmt")}'):
+                formats[int(num_format.get('numFmtId'))] = num_format.get('formatCode', '')
+            for style in style_root.findall(f'{_qn("cellXfs")}/{_qn("xf")}'):
+                self.formats.append(formats.get(int(style.get('numFmtId', '0')), ''))
+        props = self.root.find(_qn('workbookPr'))
+        self.date1904 = props is not None and props.get('date1904') in {'1', 'true'}
 
-    def __init__(self, xlsx_zip: zipfile.ZipFile) -> None:
-        self.zip = xlsx_zip
-        self.shared_strings: List[str] = self._load_shared_strings()
-        self.sheets: List[Tuple[str, str]] = self._load_sheet_list()
+    @staticmethod
+    def _string(node):
+        # Phonetic annotations are not part of the displayed cell value.
+        parts = []
+        for child in node:
+            if child.tag == _qn('t'):
+                parts.append(child.text or '')
+            elif child.tag == _qn('r'):
+                parts.extend(t.text or '' for t in child.findall(_qn('t')))
+        return ''.join(parts)
 
-    def _load_shared_strings(self) -> List[str]:
-        """Load xl/sharedStrings.xml if present."""
-        strings: List[str] = []
-        sst_path = "xl/sharedStrings.xml"
-        if sst_path not in self.zip.namelist():
-            return strings
-
-        try:
-            tree = ET.fromstring(self.zip.read(sst_path))
-            for si in tree.findall(_qn("si")):
-                text_parts = [t.text or "" for t in si.iter(_qn("t"))]
-                strings.append("".join(text_parts))
-        except Exception:
-            pass
-
-        return strings
-
-    def _load_sheet_list(self) -> List[Tuple[str, str]]:
-        """Load sheet names and worksheet paths from xl/workbook.xml & rels."""
-        sheets: List[Tuple[str, str]] = []
-        wb_path = "xl/workbook.xml"
-        rels_path = "xl/_rels/workbook.xml.rels"
-
-        if wb_path not in self.zip.namelist():
-            return sheets
-
-        # Map relationship ID to target file
-        rel_map: Dict[str, str] = {}
-        if rels_path in self.zip.namelist():
+    def _extract_cell_value(self, cell):
+        value = cell.find(_qn('v'))
+        raw = value.text if value is not None and value.text is not None else ''
+        formula = cell.find(_qn('f'))
+        if formula is not None and not raw:
+            return '=' + formula.text if formula.text else '[Formula result unavailable]'
+        kind = cell.get('t')
+        if kind == 's':
             try:
-                rels_tree = ET.fromstring(self.zip.read(rels_path))
-                for rel in rels_tree:
-                    r_id = rel.attrib.get("Id")
-                    target = rel.attrib.get("Target")
-                    if r_id and target:
-                        # Normalize target relative to xl/
-                        if not target.startswith("xl/"):
-                            if target.startswith("/"):
-                                target = target.lstrip("/")
-                            else:
-                                target = f"xl/{target}"
-                        rel_map[r_id] = target
-            except Exception:
-                pass
+                index = int(raw)
+                if not 0 <= index < len(self.shared_strings):
+                    raise ValueError()
+                return self.shared_strings[index]
+            except ValueError as exc:
+                raise ValueError(f'Invalid shared string index {raw!r} in cell {cell.get("r", "?")}') from exc
+        if kind == 'inlineStr':
+            item = cell.find(_qn('is'))
+            return self._string(item) if item is not None else ''
+        if kind == 'b':
+            if raw not in {'0', '1', ''}:
+                raise ValueError(f'Invalid Boolean value {raw!r}')
+            return 'TRUE' if raw == '1' else 'FALSE' if raw == '0' else ''
+        if raw and kind in {None, 'n'} and 's' in cell.attrib:
+            style = int(cell.get('s'))
+            if not 0 <= style < len(self.formats):
+                raise ValueError(f'Invalid style index {style}')
+            return _format_date(raw, self.formats[style], self.date1904)
+        return raw
 
-        try:
-            wb_tree = ET.fromstring(self.zip.read(wb_path))
-            sheets_elem = wb_tree.find(_qn("sheets"))
-            if sheets_elem is not None:
-                for sheet in sheets_elem.findall(_qn("sheet")):
-                    name = sheet.attrib.get("name", "Sheet")
-                    r_id = sheet.attrib.get(f"{{{R_NS}}}id")
-                    target_path = rel_map.get(r_id or "")
-                    if not target_path:
-                        # Fallback heuristic: guess based on sheetId
-                        sheet_id = sheet.attrib.get("sheetId", "1")
-                        target_path = f"xl/worksheets/sheet{sheet_id}.xml"
-                    sheets.append((name, target_path))
-        except Exception:
-            pass
+    def _parse_worksheet(self, part):
+        root = read_xml(self.zip, part)
+        if root.tag != _qn('worksheet'):
+            raise ValueError(f'Expected worksheet XML in {part}')
+        data = root.find(_qn('sheetData'))
+        if data is None:
+            return []
+        rows, row_index, max_col = {}, 0, -1
+        for row in data.findall(_qn('row')):
+            row_index = int(row.get('r', row_index + 1))
+            col_index = 0
+            for cell in row.findall(_qn('c')):
+                coord = cell.get('r')
+                actual_row = row_index
+                if coord:
+                    match = re.fullmatch(r'([A-Za-z]+)([1-9]\d*)', coord)
+                    if not match:
+                        raise ValueError(f'Invalid cell coordinate: {coord}')
+                    col_index = _col_letters_to_index(match[1])
+                    actual_row = int(match[2])
+                if not (1 <= actual_row <= 1048576 and 0 <= col_index < 16384):
+                    raise ValueError(f'Cell coordinate outside XLSX limits: {coord}')
+                value = self._extract_cell_value(cell)
+                if value:
+                    rows.setdefault(actual_row, {})[col_index] = value
+                    max_col = max(max_col, col_index)
+                col_index += 1
+        # Only materialize populated rows, not the rectangle from A1 to the last cell.
+        if len(rows) * (max_col + 1) > MAX_TABLE_CELLS:
+            raise ValueError(f'Worksheet exceeds the {MAX_TABLE_CELLS:,}-cell output limit')
+        return [[values.get(c, '') for c in range(max_col + 1)] for _, values in sorted(rows.items())]
 
-        return sheets
-
-    def convert(self) -> Tuple[str, str]:
-        """Convert all worksheets into Markdown sections with pipe tables."""
-        sheet_sections: List[str] = []
-        raw_parts: List[str] = []
-
-        for name, sheet_path in self.sheets:
-            if sheet_path not in self.zip.namelist():
+    def convert(self):
+        sections, raw = [], []
+        sheets = self.root.find(_qn('sheets'))
+        if sheets is None:
+            raise ValueError('Workbook has no sheets list')
+        for sheet in sheets.findall(_qn('sheet')):
+            name = sheet.get('name', 'Sheet')
+            rel = self.relationships.get(sheet.get(f'{{{R}}}id'))
+            if rel is None or rel.external:
+                raise ValueError(f'Missing worksheet relationship for {name}')
+            raw.append(name)
+            if rel.kind != 'worksheet':
+                sections.append(f'## {escape_text(name)}\n\n[Unsupported {escape_text(rel.kind)} sheet]')
                 continue
-
-            raw_parts.append(name)
-            rows = self._parse_worksheet(sheet_path)
-            sheet_md = f"## {name}\n\n"
-
-            if not rows:
-                sheet_md += "(Empty sheet)"
-            else:
-                table_md = _format_pipe_table(rows)
-                sheet_md += table_md
-                for r in rows:
-                    raw_parts.append(" ".join(c for c in r if c))
-
-            sheet_sections.append(sheet_md)
-
-        markdown = "\n\n".join(sheet_sections).strip()
-        raw_text = "\n".join(raw_parts).strip()
-        return markdown, raw_text
-
-    def _parse_worksheet(self, sheet_path: str) -> List[List[str]]:
-        """Parse worksheet XML into a 2D grid of cell text."""
-        tree = ET.fromstring(self.zip.read(sheet_path))
-        sheet_data = tree.find(_qn("sheetData"))
-        if sheet_data is None:
-            return []
-
-        # Read cells indexed by (row_idx, col_idx)
-        cell_dict: Dict[Tuple[int, int], str] = {}
-        max_row = 0
-        max_col = 0
-
-        curr_row_idx = 0
-        for row_elem in sheet_data.findall(_qn("row")):
-            row_attr = row_elem.attrib.get("r")
-            if row_attr:
-                try:
-                    curr_row_idx = int(row_attr) - 1
-                except ValueError:
-                    pass
-
-            curr_col_idx = 0
-            for c_elem in row_elem.findall(_qn("c")):
-                r_coord = c_elem.attrib.get("r")
-                if r_coord:
-                    m = re.match(r"^([A-Za-z]+)(\d+)$", r_coord)
-                    if m:
-                        curr_col_idx = _col_letters_to_index(m.group(1))
-                        try:
-                            curr_row_idx = int(m.group(2)) - 1
-                        except ValueError:
-                            pass
-
-                val = self._extract_cell_value(c_elem)
-                if val:
-                    cell_dict[(curr_row_idx, curr_col_idx)] = val
-                    if curr_row_idx > max_row:
-                        max_row = curr_row_idx
-                    if curr_col_idx > max_col:
-                        max_col = curr_col_idx
-
-                curr_col_idx += 1
-            curr_row_idx += 1
-
-        if not cell_dict:
-            return []
-
-        # Construct 2D grid
-        grid: List[List[str]] = [["" for _ in range(max_col + 1)] for _ in range(max_row + 1)]
-        for (r, c), val in cell_dict.items():
-            grid[r][c] = val
-
-        # Filter out empty trailing or completely blank rows
-        filtered_rows = [r for r in grid if any(cell.strip() for cell in r)]
-        return filtered_rows
-
-    def _extract_cell_value(self, c_elem: ET.Element) -> str:
-        """Extract formatted string value from a cell element."""
-        t_type = c_elem.attrib.get("t")
-        v_elem = c_elem.find(_qn("v"))
-        raw_v = v_elem.text if v_elem is not None and v_elem.text is not None else ""
-
-        if t_type == "s":
-            # Shared string index
-            try:
-                idx = int(raw_v)
-                if 0 <= idx < len(self.shared_strings):
-                    return self.shared_strings[idx]
-            except ValueError:
-                pass
-            return ""
-
-        if t_type == "inlineStr":
-            is_elem = c_elem.find(_qn("is"))
-            if is_elem is not None:
-                return "".join(t.text or "" for t in is_elem.iter(_qn("t")))
-            return ""
-
-        if t_type == "b":
-            return "TRUE" if raw_v == "1" else "FALSE"
-
-        return raw_v
+            rows = self._parse_worksheet(rel.target)
+            sections.append(f'## {escape_text(name)}\n\n' + (_format_pipe_table(rows) or '(Empty sheet)'))
+            raw.extend(' '.join(row) for row in rows)
+        return '\n\n'.join(sections), '\n'.join(raw).strip()
 
 
-def convert_xlsx(xlsx_bytes_or_file: Union[str, Path, zipfile.ZipFile, bytes]) -> Tuple[str, str]:
-    """Convert XLSX file or bytes to Markdown and raw text.
-
-    Returns:
-        tuple of (markdown_text, original_raw_text)
-    """
-    if isinstance(xlsx_bytes_or_file, zipfile.ZipFile):
-        parser = XlsxParser(xlsx_bytes_or_file)
-        return parser.convert()
-
-    if isinstance(xlsx_bytes_or_file, bytes):
-        with zipfile.ZipFile(io.BytesIO(xlsx_bytes_or_file)) as zf:
-            parser = XlsxParser(zf)
-            return parser.convert()
-
-    path = Path(xlsx_bytes_or_file)
-    with zipfile.ZipFile(path) as zf:
-        parser = XlsxParser(zf)
-        return parser.convert()
+def convert_xlsx(xlsx_bytes_or_file) -> tuple[str, str]:
+    with open_package(xlsx_bytes_or_file) as archive:
+        return XlsxParser(archive).convert()
 
 
-def convert_xlsx_file(file_path: Union[str, Path]) -> Tuple[str, str]:
-    """Convert XLSX file path to Markdown and raw text."""
+def convert_xlsx_file(file_path: str | Path) -> tuple[str, str]:
     return convert_xlsx(file_path)

@@ -139,7 +139,7 @@ def test_cli_main_entry_point():
 
 
 def test_cli_all_sample_formats():
-    for ext in ("sample.html", "sample.docx", "sample.csv", "sample.xlsx"):
+    for ext in ("sample.html", "sample.docx", "sample.csv", "sample.xlsx", "sample.pptx"):
         file_path = SAMPLE_DIR / ext
         stdout = io.StringIO()
         stderr = io.StringIO()
@@ -235,7 +235,7 @@ def test_cli_stdin_xlsx():
     assert exit_code == 0
     out = stdout.getvalue()
     assert "## Overview" in out
-    assert "| convert_html | HTML/HTM |" in out
+    assert r"| convert\_html | HTML/HTM |" in out
     assert stderr.getvalue() == ""
 
 

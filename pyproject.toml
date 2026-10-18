@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mdify"
 version = "0.1.0"
-description = "Convert documents (HTML, DOCX, CSV, XLSX) to Markdown for LLMs"
+description = "Convert HTML, DOCX, CSV, XLSX, and PPTX to Markdown for LLMs"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [

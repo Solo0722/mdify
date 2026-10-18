@@ -195,7 +195,8 @@ def test_ignore_script_and_style():
 def test_html_entities():
     html = "<p>Tom &amp; Jerry &lt;friends&gt; &quot;quote&#39;s&quot;</p>"
     md, _ = convert_html(html)
-    assert "Tom & Jerry <friends> \"quote's\"" in md
+    # Literal angle brackets must not become an HTML tag in the Markdown output.
+    assert "Tom & Jerry \\<friends\\> \"quote's\"" in md
 
 
 def test_convert_html_file():

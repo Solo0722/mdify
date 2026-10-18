@@ -1,4 +1,4 @@
-"""Generate sample files (sample.html, sample.docx, sample.csv, sample.xlsx)
+"""Generate sample files (HTML, DOCX, CSV, XLSX, PPTX)
 
 using only the Python standard library.
 """
@@ -7,6 +7,11 @@ from __future__ import annotations
 
 import zipfile
 from pathlib import Path
+
+if __package__:
+    from .generate_pptx import generate_sample_pptx
+else:
+    from generate_pptx import generate_sample_pptx
 
 SAMPLE_DIR = Path(__file__).resolve().parent
 
@@ -458,7 +463,7 @@ def generate_sample_xlsx(output_path: Path) -> None:
 
 
 def generate_all_samples(target_dir: Path | None = None) -> None:
-    """Generate all 4 sample files into the target directory."""
+    """Generate all five sample files into the target directory."""
     out_dir = target_dir if target_dir is not None else SAMPLE_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -466,6 +471,7 @@ def generate_all_samples(target_dir: Path | None = None) -> None:
     docx_file = out_dir / "sample.docx"
     csv_file = out_dir / "sample.csv"
     xlsx_file = out_dir / "sample.xlsx"
+    pptx_file = out_dir / "sample.pptx"
 
     print(f"Generating samples in: {out_dir}")
     generate_sample_html(html_file)
@@ -479,6 +485,9 @@ def generate_all_samples(target_dir: Path | None = None) -> None:
 
     generate_sample_xlsx(xlsx_file)
     print(f"  Created: {xlsx_file.name}")
+
+    generate_sample_pptx(pptx_file)
+    print(f"  Created: {pptx_file.name}")
 
     print("Sample generation complete.")
 
